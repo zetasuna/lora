@@ -1,197 +1,168 @@
----
-Title: DevOps Project
----
+# Mô phỏng hệ thống LoRaWAN
 
-## Architecture
+## 1. Giới thiệu
 
-```txt
+Hệ thống mô phỏng LoRaWAN gồm 4 thành phần chính:
 
-                    +-------------------+
-                    |     Sensor(s)     |
-                    |-------------------|
-                    |      LoraWan      |
-                    +-------------------+
-                              |
-                              |
-                           LoraWan
-                              |
-                              v
-                    +-------------------+
-                    |      Gateway      |
-                    |-------------------|
-                    | - LoraWan         |
-                    | - MQTT Publisher  |
-                    | - SQLite          |
-                    |  (ML Prediction)  |
-                    +-------------------+
-                              |
-                              |
-                         MQTT Publish
-                              |
-                              v
-                  +-------------------------+
-                  |       MQTT Broker       |
-                  |-------------------------|
-                  | (EMQX, Mosquitto, etc.) |
-                  +-------------------------+
-                              ^
-                              |
-                        Internet (TLS)
-                              |
-                        MQTT Subscribe
-                              |
-                              |
-                +-----------------------------+
-                |      Consumer (Cloud)       |
-                |-----------------------------|
-                | - MQTT Subscriber           |
-                | - Lưu Data vào SQLite       |
-                | - Websocket Server          |
-                | - HTTP Server (HTMX + UI)   |
-                | - Tailwind UI Templates     |
-                +-----------------------------+
-                              |
-                              |
-             +----------------+----------------+
-             |                                 |
-  WebSocket (Push realtime)            HTTP Query (HTMX)
-             |                                 |
-   +--------------------+           +-------------------------+
-   | Realtime Live View |           | Historical Query + Alert|
-   +--------------------+           +-------------------------+
-```
-
-## Triển khai Kubernetes
-
-- Triển khai được Kubernetes thông qua công cụ minikube trên 1 node
-- Triển khai được Kubernetes thông qua công cụ kubeadm hoặc kubespray
-  lên 1 master node VM + 1 worker node VM
-
-## K8S Helm Chart
-
-- Cài đặt ArgoCD lên Kubernetes Cluster, expose được ArgoCD qua NodePort
-- Cài đặt Jenkins lên Kubernetes Cluster, expose được Jenkins qua NodePort
-- Viết hoặc tìm mẫu Helm Chart cho app bất kỳ, để vào 1 folder riêng trong repo app
-- Tạo Repo Config cho app trên, trong repo này chứa các file values.yaml
-  với nội dung của cá file values.yaml là các config cần thiết
-  để chạy ứng dụng trên k8s bằng Helm Chart
-- Viết 1 luồng CI/CD cho app, khi có thay đổi từ source code
-  1 tag mới được tạo ra trên trên repo này thì luồng CI/CD
-  tương ứng của repo đó thực hiện các công việc sau:
-  - Sửa code trong source code
-  - Thực hiện build source code trên Jenkin bằng docker
-    với image tag là tag name đã được tạo ra trên gitlab/github
-    và push docker image sau khi build xong lên Docker Hub
-  - Sửa giá trị Image version trong file values.yaml trong config repo
-    và push thay đổi lên config repo
-  - Cấu hình ArgoCD tự động triển khai lại web Deployment và api Deployment
-    khi có sự thay đổi trên config repo
-
-## Monitor
-
-- Expose metric của app ra 1 http path
-- Sử dụng ansible playbooks để triển khai container Prometheus server.
-  Sau đó cấu hình prometheus add target giám sát các metrics đã expose ở trên
-- Sử dụng ansible playbooks để triển khai stack EFK (elasticsearch, fluentd, kibana)
-  Sau đó cấu hình logging cho web service và api service,
-  đảm bảo khi có http request gửi vào web service hoặc api service
-  thì trong các log mà các service này sinh ra, có ít nhất 1 log có các thông tin
-
-## Security
-
-- Dựng HAProxy Loadbalancer trên 1 VM riêng
-  (trong trường hợp cụm lab riêng của sinh viên)
-  với mode TCP, mở port trên LB trỏ đến NodePort của App trên K8S Cluster
-- Sử dụng giải pháp Ingress cho các deployment,
-  đảm bảo các truy cập đến các port App sử dụng https
-- Cho phép sinh viên sử dụng self-signed cert để làm bài
+- Sensor:
+  - Thiết bị cảm biến ảo
+  - Sinh dữ liệu
+  - Gửi theo giao thức LoRaWAN.
+- Gateway:
+  - Nhận dữ liệu qua UDP
+  - Gửi lại dữ liệu dưới dạng HTTP JSON.
+- Network Server:
+  - Giải mã LoRaWAN
+  - Chuyển tiếp payload gốc tới App Server.
+- Application Server:
+  - Lưu và hiển thị dữ liệu cảm biến theo thời gian thực.
 
 ---
 
-## 🏗️ **TỔNG THỂ KIẾN TRÚC**
+## 2. Biểu đồ Use Case
 
-```plaintext
-+----------------+       +------------------+       +-------------------+        +-------------------+
-| Sensor giả lập | ====> |   Gateway xử lý  | ====> | Cloud / AWS Layer | ====>  | Web Monitoring UI |
-| (Python Script)|       | (FastAPI/Django) |       |   (API / DB)      |        |   (Django + HTMX) |
-+----------------+       +------------------+       +-------------------+        +-------------------+
-                               |                                                       ^
-                               v                                                       |
-                (Xử lý dữ liệu, làm sạch, format)                                      |
-                               |                                                       |
-                               +--------------------> Redis / PostgreSQL <-------------+
+```mermaid
+%% Use Case Diagram
+%% Actors: Sensor, Gateway, Network Server, App Server, User
+%% Use Cases: Send data, Forward UDP, Decode packet, Store & Show
+
+  %% Mermaid không hỗ trợ use case diagram chính thức, ta sử dụng flowchart thay thế
+flowchart TD
+    Sensor -->|UDP| Gateway
+    Gateway -->|HTTP POST /uplink| NetServer
+    NetServer -->|Decode + HTTP POST /sensor| AppServer
+    User -->|Login| AppServer
+    AppServer -->|WebSocket| User
 ```
 
 ---
 
-## 🧩 **CHI TIẾT CÔNG CỤ / STACK CHO TỪNG THÀNH PHẦN**
+## 3. Biểu đồ Class Diagram
 
-### 🔧 **1. Sensor mô phỏng (Python Script)**
+```mermaid
+classDiagram
+    class SensorData {
+        +string ID
+        +string Type
+        +float Value
+        +string Unit
+        +string Timestamp
+    }
 
-| Thành phần     | Công nghệ                        | Vai trò                                                |
-| -------------- | -------------------------------- | ------------------------------------------------------ |
-| Sensor Script  | `Python`                         | Sinh dữ liệu ngẫu nhiên (giá trị mực nước, áp suất...) |
-| Giao tiếp      | `HTTP` (POST) hoặc `MQTT`        | Gửi đến Gateway                                        |
-| Lập lịch       | `schedule`, `time.sleep`, `cron` | Gửi dữ liệu định kỳ                                    |
-| Format dữ liệu | JSON                             | Chuẩn hóa format gửi                                   |
+    class LoRaWANContext {
+        +DevAddr
+        +AppSKey
+        +NwkSKey
+        +FPort
+        +FCnt
+    }
 
-> 📁 Ví dụ thư viện: `random`, `schedule`, `paho-mqtt`, `requests`
+    class Sensor {
+        +string ID
+        +uint TypeID
+        +uint Interval
+        +GenerateData()
+    }
 
-### ⚙️ **2. Gateway xử lý dữ liệu (Python)**
+    class WebSocketHub {
+        +map clients
+        +Broadcast(data)
+        +Register(conn)
+    }
 
-| Thành phần       | Công nghệ                   | Vai trò                        |
-| ---------------- | --------------------------- | ------------------------------ |
-| Web Server       | `FastAPI` **hoặc** `Django` | Nhận dữ liệu từ sensor         |
-| Data Cleaning    | Python logic                | Làm sạch, check anomaly        |
-| Queue (tuỳ chọn) | `Redis` + `Celery`          | Batch xử lý hoặc async         |
-| Gửi lên Cloud    | `requests`, `boto3`         | Gửi tiếp lên cloud API hoặc DB |
-| Ghi log          | `loguru`, `logging`         | Ghi nhật ký gửi nhận dữ liệu   |
-
-> ✅ _FastAPI gọn nhẹ, dễ triển khai cho microservice. Django thích hợp nếu bạn dùng chung project với Web UI._
-
-### ☁️ **3. Cloud (AWS hoặc mock server)**
-
-| Thành phần                        | Công nghệ                                      | Vai trò                            |
-| --------------------------------- | ---------------------------------------------- | ---------------------------------- |
-| API Gateway                       | `AWS API Gateway` hoặc custom FastAPI endpoint | Nhận request từ Gateway            |
-| Lưu trữ thời gian thực            | `AWS DynamoDB` hoặc `PostgreSQL`               | Lưu dữ liệu cảm biến               |
-| Xử lý realtime (tuỳ chọn)         | `AWS Lambda`, `Kinesis`                        | Xử lý hoặc filter dữ liệu realtime |
-| Sử dụng local (nếu chưa dùng AWS) | FastAPI hoặc PostgreSQL local                  | Dễ test, chưa cần deploy AWS       |
-
-> ✅ Bạn có thể dùng local PostgreSQL ban đầu rồi chuyển sang DynamoDB hoặc RDS sau.
-
-### 🌐 **4. Website monitoring realtime**
-
-| Thành phần         | Công nghệ                        | Vai trò                           |
-| ------------------ | -------------------------------- | --------------------------------- |
-| Backend web        | `Django`                         | Hiển thị dashboard                |
-| Frontend UI        | `HTMX` + `Tailwind CSS`          | Tạo giao diện động đơn giản       |
-| Giao tiếp realtime | **2 lựa chọn**:                  |                                   |
-|                    | ✅ `HTMX polling` (5s/lần...)    | Dễ làm, dễ debug                  |
-|                    | ✅ `Django Channels` + WebSocket | Giao tiếp thời gian thực thực thụ |
-| DB                 | PostgreSQL (chia sẻ với Gateway) | Lưu dữ liệu cảm biến              |
-
-> 🔁 _HTMX là giải pháp đơn giản và hiệu quả. Nếu cần realtime "live stream", nên dùng WebSocket._
-
-## 🧰 TỔNG HỢP CÁC CÔNG CỤ ĐỀ XUẤT
-
-| Mục tiêu                   | Công cụ cụ thể                        |
-| -------------------------- | ------------------------------------- |
-| Sinh dữ liệu cảm biến      | Python, `random`, `schedule`          |
-| Giao tiếp Sensor → Gateway | HTTP (POST) hoặc MQTT                 |
-| Gateway xử lý dữ liệu      | FastAPI hoặc Django                   |
-| Queue xử lý (tùy chọn)     | Redis + Celery                        |
-| Lưu dữ liệu                | PostgreSQL hoặc DynamoDB              |
-| Giao tiếp Gateway → Cloud  | HTTP hoặc AWS SDK (boto3)             |
-| Web UI                     | Django + HTMX + Tailwind              |
-| Realtime frontend          | HTMX polling **hoặc** Django Channels |
-| Logging / Debug            | loguru, Django Debug Toolbar          |
-
-## 🗂️ KẾ HOẠCH TRIỂN KHAI GỢI Ý
-
-1. ✅ Giai đoạn 1: Cảm biến + Gateway + lưu local PostgreSQL
-2. ✅ Giai đoạn 2: Xây website theo thời gian thực với polling HTMX
-3. ✅ Giai đoạn 3: Đưa Gateway lên cloud (deploy API)
-4. ✅ Giai đoạn 4: Dùng WebSocket (Django Channels) hoặc chuyển sang AWS IoT
+    Sensor --> SensorData
+    AppServer --> WebSocketHub
+    NetServer --> LoRaWANContext
+```
 
 ---
+
+## 4. Biểu đồ Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Sensor
+    participant Gateway
+    participant NetServer
+    participant AppServer
+    participant User
+
+    Sensor->>Gateway: Gửi gói UDP (LoRaWAN encoded)
+    Gateway->>NetServer: HTTP POST /uplink (base64 JSON)
+    NetServer->>NetServer: Giải mã gói tin
+    NetServer->>AppServer: HTTP POST /sensor (payload JSON)
+    AppServer->>AppServer: Lưu vào SQLite
+    AppServer-->>User: WebSocket push data
+```
+
+---
+
+## 5. Luồng xử lý chi tiết
+
+### Sensor
+
+- Tạo danh sách cảm biến với DevAddr/AppSKey/NwkSKey.
+- Sinh dữ liệu ngẫu nhiên và Encode LoRaWAN.
+- Gửi dữ liệu qua UDP tới Gateway (127.0.0.1:10001).
+
+### Gateway
+
+- Nhận gói UDP.
+- Mã hóa base64, đóng gói JSON.
+- Gửi HTTP POST tới Network Server (/uplink).
+
+### Network Server
+
+- Nhận POST uplink, decode base64, parse LoRaWAN packet.
+- Xác thực theo DevAddr.
+- Decode payload với AppSKey/NwkSKey.
+- Gửi payload gốc sang App Server (/sensor).
+
+### App Server
+
+- Nhận JSON payload từ Network Server.
+- Ghi vào database SQLite.
+- Phát dữ liệu qua WebSocket cho frontend.
+- Cung cấp trang giao diện web monitor và login (sử dụng Gorilla Sessions).
+
+---
+
+## 6. Cơ sở dữ liệu (SQLite)
+
+```sql
+-- Bảng users
+CREATE TABLE users (
+  username TEXT PRIMARY KEY,
+  password TEXT NOT NULL
+);
+
+-- Bảng sensor
+CREATE TABLE sensor (
+  id TEXT,
+  type TEXT,
+  value REAL,
+  unit TEXT,
+  timestamp TEXT
+);
+```
+
+---
+
+## 7. Cải tiến đề xuất
+
+- [x] Mô phỏng Luồng hoạt động cơ bản
+- [ ] Hỗ trợ downlink (2-chiều)
+- [ ] Cải thiện Gateway: xử lý giao tiếp với Concentrator (Thay thế mô phỏng UDP bằng giao tiếp SX1301)
+- [ ] Cải thiện Network Server: Hỗ trợ nhiều Gateway
+- [ ] Hỗ trợ chạy Container (Docker)
+- [ ] Hỗ trợ chạy Trên Cloud (AWS)
+- [ ] Thay sqlite bằng PostgreSQL + JWT login
+- [ ] Giao diện frontend:
+  - Thêm biểu đồ
+  - Cải thiện giao diện quản lý
+  - Thêm các tính năng (lệnh điều khiển, downlink,...)
+
+## Hình ảnh
+
+![Web](doc/img/web.png)
+![Data](doc/img/data.png)
